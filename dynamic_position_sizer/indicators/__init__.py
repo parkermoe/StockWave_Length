@@ -17,6 +17,10 @@ from indicators.volatility_regime import (
     get_regime_multiplier,
     VolatilityRegime
 )
+from indicators.analyst_scoring import (
+    AnalystScoring,
+    AnalystScore
+)
 
 __all__ = [
     "compute_atr",
@@ -26,5 +30,7 @@ __all__ = [
     "compute_volatility_regime",
     "compute_rolling_regime",
     "get_regime_multiplier",
-    "VolatilityRegime"
+    "VolatilityRegime",
+    "AnalystScoring",
+    "AnalystScore"
 ]

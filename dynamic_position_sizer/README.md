@@ -214,3 +214,7 @@ dynamic_position_sizer/
 ## License
 
 MIT
+
+
+## Further Contributing
+Machine learning integration: Track which screened stocks actually work out (hit profit targets vs stopped out). Use historical data to refine scoring weights automatically. Future enhancement after V1 is stable.

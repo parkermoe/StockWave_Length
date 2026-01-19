@@ -330,5 +330,296 @@ def quick(
         raise typer.Exit(1)
 
 
+@app.command()
+def screen(
+    strategies: List[str] = typer.Argument(
+        ...,
+        help="Screener strategy/strategies to run (e.g., canslim minervini)"
+    ),
+    combine: str = typer.Option(
+        "union",
+        "--combine", "-c",
+        help="How to combine multiple strategies: 'union' (pass any) or 'intersection' (pass all)"
+    ),
+    universe: str = typer.Option(
+        "sp500",
+        "--universe", "-u",
+        help="Stock universe: 'sp500', 'nasdaq100', 'russell2000', 'all'"
+    ),
+    min_score: Optional[float] = typer.Option(
+        None,
+        "--min-score",
+        help="Minimum score threshold (0-100)"
+    ),
+    max_results: int = typer.Option(
+        20,
+        "--max-results", "-n",
+        help="Maximum number of results to display"
+    ),
+    cap_size: Optional[str] = typer.Option(
+        None,
+        "--cap-size",
+        help="Market cap filter: 'mega', 'large', 'mid', 'small', 'micro', or 'all'"
+    ),
+    sectors: Optional[str] = typer.Option(
+        None,
+        "--sectors",
+        help="Comma-separated sectors to include (e.g., 'Technology,Healthcare')"
+    ),
+    exclude_sectors: Optional[str] = typer.Option(
+        None,
+        "--exclude-sectors",
+        help="Comma-separated sectors to exclude"
+    ),
+    industries: Optional[str] = typer.Option(
+        None,
+        "--industries",
+        help="Comma-separated industries to include"
+    ),
+    exclude_industries: Optional[str] = typer.Option(
+        None,
+        "--exclude-industries",
+        help="Comma-separated industries to exclude"
+    ),
+    no_position_sizing: bool = typer.Option(
+        False,
+        "--no-position-sizing",
+        help="Skip position sizing calculations (faster)"
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json", "-j",
+        help="Output as JSON"
+    )
+):
+    """
+    Run stock screener with specified strategy/strategies.
+    
+    Examples:
+    
+        python cli.py screen canslim
+        
+        python cli.py screen minervini --max-results 10
+        
+        python cli.py screen canslim minervini --combine intersection
+        
+        python cli.py screen volatility --min-score 75
+        
+        python cli.py screen canslim --cap-size mid --sectors Technology
+        
+        python cli.py screen minervini --universe all --exclude-sectors Financials
+        
+        python cli.py screen high_volatility --cap-size small,mid
+    """
+    from screeners import list_screeners
+    from screeners.screener_manager import ScreenerManager
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    
+    # Validate strategies
+    available = list_screeners()
+    invalid = [s for s in strategies if s not in available]
+    if invalid:
+        console.print(f"[red]Unknown screener(s): {', '.join(invalid)}[/red]")
+        console.print(f"Available: {', '.join(available)}")
+        raise typer.Exit(1)
+    
+    console.print(f"[bold]Running screener(s):[/bold] {', '.join(strategies)}")
+    if len(strategies) > 1:
+        console.print(f"[dim]Combine mode: {combine}[/dim]")
+    console.print(f"[dim]Universe: {universe}[/dim]")
+    
+    # Parse filter options
+    cap_categories = None
+    if cap_size:
+        if cap_size.lower() == 'all':
+            cap_categories = ['mega', 'large', 'mid', 'small', 'micro']
+        else:
+            cap_categories = [c.strip().lower() for c in cap_size.split(',')]
+        console.print(f"[dim]Cap size: {', '.join(cap_categories)}[/dim]")
+    
+    sectors_list = [s.strip() for s in sectors.split(',')] if sectors else None
+    if sectors_list:
+        console.print(f"[dim]Sectors: {', '.join(sectors_list)}[/dim]")
+    
+    exclude_sectors_list = [s.strip() for s in exclude_sectors.split(',')] if exclude_sectors else None
+    if exclude_sectors_list:
+        console.print(f"[dim]Excluding sectors: {', '.join(exclude_sectors_list)}[/dim]")
+    
+    industries_list = [i.strip() for i in industries.split(',')] if industries else None
+    if industries_list:
+        console.print(f"[dim]Industries: {', '.join(industries_list)}[/dim]")
+    
+    exclude_industries_list = [i.strip() for i in exclude_industries.split(',')] if exclude_industries else None
+    if exclude_industries_list:
+        console.print(f"[dim]Excluding industries: {', '.join(exclude_industries_list)}[/dim]")
+    
+    console.print()
+    
+    # Progress tracking
+    progress_state = {"current": 0, "total": 100, "message": "Initializing..."}
+    
+    def progress_callback(current, total, message):
+        progress_state.update({"current": current, "total": total, "message": message})
+    
+    # Run screen with progress bar
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        console=console
+    ) as progress:
+        task = progress.add_task("Screening...", total=100)
+        
+        def update_progress(current, total, message):
+            progress.update(task, completed=current, description=message)
+        
+        manager = ScreenerManager(universe=universe, max_workers=5)
+        summary = manager.run_screen(
+            strategy_names=strategies,
+            combine_mode=combine,
+            min_score=min_score,
+            max_results=max_results,
+            calculate_positions=not no_position_sizing,
+            progress_callback=update_progress,
+            cap_categories=cap_categories,
+            sectors=sectors_list,
+            exclude_sectors=exclude_sectors_list,
+            industries=industries_list,
+            exclude_industries=exclude_industries_list
+        )
+    
+    # Output results
+    if json_output:
+        import json
+        output = {
+            "strategies": summary.strategy_names,
+            "total_universe": summary.total_universe,
+            "passed_screener": summary.passed_screener,
+            "execution_time": summary.execution_time_seconds,
+            "results": []
+        }
+        for result in summary.results[:max_results]:
+            output["results"].append({
+                "ticker": result.ticker,
+                "score": result.screener_result.score,
+                "passed": result.screener_result.passed,
+                "current_price": result.stop_recommendation.current_price if result.stop_recommendation else None,
+                "suggested_stop": result.stop_recommendation.suggested_stop if result.stop_recommendation else None,
+                "shares_for_1000": result.stop_recommendation.shares_for_risk(1000) if result.stop_recommendation else None
+            })
+        console.print_json(json.dumps(output, indent=2))
+        return
+    
+    # Summary stats
+    console.print(Panel(
+        f"[bold]Screened:[/bold] {summary.total_universe} stocks\n"
+        f"[bold]Passed:[/bold] {summary.passed_screener} candidates\n"
+        f"[bold]Time:[/bold] {summary.execution_time_seconds:.1f}s",
+        title="Screen Summary",
+        border_style="green"
+    ))
+    console.print()
+    
+    # Results table
+    table = Table(
+        title=f"Top {min(len(summary.results), max_results)} Results",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan"
+    )
+    
+    table.add_column("Ticker", style="bold")
+    table.add_column("Score", justify="right")
+    table.add_column("Base", justify="right", style="dim")  # Score before analyst adjustment
+    table.add_column("Mult", justify="right", style="magenta")  # Analyst multiplier
+    table.add_column("Price", justify="right")
+    table.add_column("Target$", justify="right", style="green")  # Analyst target
+    table.add_column("Upside%", justify="right", style="green")  # Upside to target
+    table.add_column("Stop", justify="right", style="cyan")
+    table.add_column("Dist%", justify="right")
+    table.add_column("Shares@$1k", justify="right")
+    table.add_column("Regime", justify="center")
+    
+    regime_colors = {
+        "low": "green",
+        "normal": "blue",
+        "elevated": "yellow",
+        "extreme": "red"
+    }
+    
+    for result in summary.results[:max_results]:
+        rec = result.stop_recommendation
+        analyst = result.analyst_score
+        
+        # Format analyst data
+        mult_str = f"{analyst.multiplier:.2f}x" if analyst else "1.00x"
+        base_score_str = f"{result.base_score:.0f}" if result.base_score else "-"
+        
+        # Target price (not upside %)
+        if analyst and analyst.target_upside_pct is not None:
+            # Calculate actual target price from current price and upside
+            if rec and rec.current_price:
+                target_price = rec.current_price * (1 + analyst.target_upside_pct / 100)
+                target_str = f"${target_price:.2f}"
+            else:
+                target_str = f"+{analyst.target_upside_pct:.0f}%"
+        else:
+            target_str = "-"
+        
+        upside_str = f"{analyst.target_upside_pct:+.0f}%" if (analyst and analyst.target_upside_pct is not None) else "-"
+        
+        if rec:
+            regime = rec.volatility_regime
+            regime_str = f"[{regime_colors.get(regime.regime, 'white')}]{regime.regime[:3].upper()}[/]" if regime else "-"
+            shares_1k = rec.shares_for_risk(1000)
+            
+            table.add_row(
+                result.ticker,
+                f"{result.screener_result.score:.0f}",
+                base_score_str,
+                mult_str,
+                f"${rec.current_price:.2f}",
+                target_str,
+                upside_str,
+                f"${rec.suggested_stop:.2f}",
+                f"{rec.stop_distance_pct:.1f}%",
+                f"{shares_1k:,}",
+                regime_str
+            )
+        else:
+            table.add_row(
+                result.ticker,
+                f"{result.screener_result.score:.0f}",
+                base_score_str,
+                mult_str,
+                "-", target_str, upside_str, "-", "-", "-", "-"
+            )
+    
+    console.print(table)
+
+
+@app.command()
+def list_strategies():
+    """
+    List all available screener strategies.
+    """
+    from screeners import list_screeners, get_screener
+    
+    strategies = list_screeners()
+    
+    console.print("[bold]Available Screener Strategies:[/bold]\n")
+    
+    for name in sorted(strategies):
+        screener = get_screener(name)
+        desc = screener.get_description()
+        criteria = screener.get_criteria()
+        
+        console.print(f"[bold cyan]{name}[/bold cyan]")
+        console.print(f"  {desc}")
+        console.print(f"  [dim]Criteria ({len(criteria)}):[/dim] {', '.join(criteria)}")
+        console.print()
+
+
 if __name__ == "__main__":
     app()
